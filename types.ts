@@ -2,31 +2,29 @@ export interface AudioFile {
     file: File;
     id: string; // UUID
     name: string;
-    status: 'idle' | 'processing' | 'encoding' | 'completed' | 'error';
+    originalSize: number;
+    status: 'idle' | 'decoding' | 'rendering' | 'trimming' | 'encoding' | 'completed' | 'error';
     progress: number;
     error?: string;
 }
 
 export interface ConfigOptions {
-    pitchShift: number;
-    playbackRate: number;
+    pitchShift: number;     // Default: +2
+    playbackRate: number;   // Default: 1.2
     soundOptimization: boolean;
-    concurrency: number;
+    concurrency: number;    // Default: 120
+    zipFileName: string;    // New: User defined
 }
 
 export interface ProcessedTrackInfo {
     fileName: string;
-    originalDuration: number;
-    finalDuration: number;
-    size: number;
     blob: Blob;
+    size: number;
 }
 
 export interface ProcessReport {
     totalFiles: number;
     successCount: number;
     errorCount: number;
-    startTime: number;
-    endTime: number;
-    errors: { name: string; msg: string }[];
+    timeElapsed: number;
 }
