@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI-Powered Audio Batch Processor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- LameJS for MP3 encoding -->
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    <!-- JSZip for Zip creation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+      .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+
+      :root, .theme-dark {
+          --bg-primary: #0f172a;
+          --bg-secondary: rgba(30, 41, 59, 0.5);
+          --text-primary: #cbd5e1;
+          --text-secondary: #94a3b8;
+          --text-tertiary: #e2e8f0;
+          --border-color: #334155;
+          --accent-color: #22d3ee;
+          --accent-color-hover: #67e8f9;
+          --accent-text-color: #0f172a;
+          --accent-gradient-from: #22d3ee;
+          --accent-gradient-to: #3b82f6;
+          --button-disabled-bg: #475569;
+          --button-disabled-text: #94a3b8;
+          --success-color: #4ade80;
+          --success-bg: #22c55e;
+          --success-bg-hover: #4ade80;
+          --success-text-color: #0f172a;
+          --warning-color: #facc15;
+          --error-bg: rgba(127, 29, 29, 0.5);
+          --error-border: #7f1d1d;
+          --error-text: #fca5a5;
+          --input-bg: #334155;
+          --input-bg-hover: #475569;
+          --input-border: #475569;
+          --progress-bar-bg: #22d3ee;
+          --progress-track-bg: #334155;
+          --bg-image: none;
+      }
+      /* ... (Giữ nguyên các theme khác nếu cần, hoặc xóa bớt cho gọn) ... */
+      body {
+        background-color: var(--bg-primary);
+        color: var(--text-primary);
+        transition: background-color 0.5s ease, color 0.5s ease;
+      }
+    </style>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "name": "AI-Powered SRT Audio Merger",
+  "description": "Automatically merge audio onto an SRT timeline with configurable pitch/speed. Intelligently detects and generates missing audio using Gemini TTS.",
+  "requestFramePermissions": []
+}
