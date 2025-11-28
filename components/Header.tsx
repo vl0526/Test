@@ -1,26 +1,18 @@
 import React from 'react';
 import { WaveformIcon } from './Icons';
-import { t } from '../localization/vi';
-import { ThemeSwitcher } from './ThemeSwitcher';
 
-interface HeaderProps {
-    theme: string;
-    setTheme: (theme: string) => void;
-}
-
-export const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => (
-    <header className="text-center mb-8 relative">
-        <div className="absolute top-0 right-0">
-            <ThemeSwitcher theme={theme} setTheme={setTheme} />
+export const Header: React.FC = () => (
+    <header className="flex h-16 items-center flex-shrink-0 px-6 bg-[var(--bg-panel)] border-b border-[var(--border-color)] shadow-sm z-20">
+        <div className="flex items-center gap-3">
+            <div className="bg-[var(--accent-color)] p-2 rounded-lg text-white shadow-lg shadow-blue-500/30">
+                <WaveformIcon className="h-6 w-6" />
+            </div>
+            <div>
+                <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">
+                    Studio <span className="text-[var(--accent-color)]">BatchProcessor</span>
+                </h1>
+                <p className="text-xs text-[var(--text-secondary)] font-medium">Professional Audio Rendering Engine</p>
+            </div>
         </div>
-        <div className="flex items-center justify-center gap-4 mb-4">
-            <WaveformIcon className="h-12 w-12 text-[var(--accent-color)]" />
-            <h1 className="text-4xl sm:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-[var(--accent-gradient-from)] to-[var(--accent-gradient-to)]">
-                {t.header.title}
-            </h1>
-        </div>
-        <p className="max-w-3xl mx-auto text-lg text-[var(--text-secondary)]">
-            {t.header.description}
-        </p>
     </header>
 );
