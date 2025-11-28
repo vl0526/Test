@@ -2,171 +2,173 @@ import React, { useState, useCallback, useReducer } from 'react';
 import { AudioFile, ConfigOptions, ProcessReport } from './types';
 import { BatchProcessor } from './services/audioProcessor';
 import { FileUpload } from './components/FileUpload';
-import { ResultsDisplay } from './components/ResultsDisplay';
 import { Header } from './components/Header';
 import { ConfigurationPanel } from './components/ConfigurationPanel';
-import { LoaderIcon, CheckCircleIcon, WarningIcon, SettingsIcon } from './components/Icons';
-import { t } from './localization/vi';
+import { LoaderIcon, CheckCircleIcon, WarningIcon, SettingsIcon, DownloadIcon } from './components/Icons';
 
-// Helper for reducer
-type Action = 
-    | { type: 'ADD_FILES', payload: AudioFile[] }
-    | { type: 'UPDATE_STATUS', id: string, status: string, progress: number }
-    | { type: 'RESET' }
-    | { type: 'SET_CONFIG', payload: ConfigOptions };
-
-function reducer(state: { files: AudioFile[], config: ConfigOptions }, action: Action) {
-    switch (action.type) {
-        case 'ADD_FILES': return { ...state, files: action.payload };
-        case 'UPDATE_STATUS':
-            const newFiles = state.files.map(f => 
-                f.id === action.id ? { ...f, status: action.status, progress: action.progress } : f
-            );
-            return { ...state, files: newFiles as AudioFile[] };
-        case 'RESET': return { ...state, files: [] };
-        case 'SET_CONFIG': return { ...state, config: action.payload };
-        default: return state;
-    }
-}
-
-const INITIAL_CONFIG: ConfigOptions = {
-    pitchShift: 0,
-    playbackRate: 1.0,
-    soundOptimization: true,
-    concurrency: navigator.hardwareConcurrency || 4
+// Default Studio Config
+const DEFAULT_CONFIG: ConfigOptions = {
+    pitchShift: 2,          // +2 Semitones
+    playbackRate: 1.2,      // 1.2x Speed
+    soundOptimization: true,// ON
+    concurrency: 120,       // 120 Threads
+    zipFileName: 'Rendered_Studio_Mix'
 };
 
 const App: React.FC = () => {
     const [isProcessing, setIsProcessing] = useState(false);
+    const [zipFile, setZipFile] = useState<File | null>(null);
     const [report, setReport] = useState<ProcessReport | null>(null);
-    const [zipBlob, setZipBlob] = useState<Blob | null>(null);
 
-    const [state, dispatch] = useReducer(reducer, {
-        files: [],
-        config: INITIAL_CONFIG
-    });
+    // Simple State Management
+    const [files, setFiles] = useState<AudioFile[]>([]);
+    const [config, setConfig] = useState<ConfigOptions>(DEFAULT_CONFIG);
 
-    const handleAudioUpload = useCallback((fileList: FileList | null) => {
+    const handleUpload = useCallback((fileList: FileList | null) => {
         if (!fileList) return;
-        const newFiles = Array.from(fileList)
+        const newFs = Array.from(fileList)
             .filter(f => /\.(mp3|wav|m4a|ogg|flac)$/i.test(f.name))
             .map(f => ({
-                file: f, id: Math.random().toString(36).substr(2, 9), name: f.name, status: 'idle', progress: 0
+                file: f, id: Math.random().toString(36).substr(2, 9), 
+                name: f.name, originalSize: f.size, status: 'idle' as const, progress: 0
             }));
-        dispatch({ type: 'ADD_FILES', payload: newFiles as AudioFile[] });
-        setReport(null); setZipBlob(null);
+        setFiles(newFs);
+        setZipFile(null);
+        setReport(null);
     }, []);
 
-    const handleProcess = useCallback(() => {
-        if (state.files.length === 0) return;
+    const runBatch = useCallback(() => {
+        if (files.length === 0) return;
         setIsProcessing(true);
-        const processor = new BatchProcessor( state.files, state.config,
-            (id, status, progress) => dispatch({ type: 'UPDATE_STATUS', id, status, progress }),
-            (zip, report) => {
-                setZipBlob(zip); setReport(report); setIsProcessing(false);
+        const engine = new BatchProcessor(files, config, 
+            (id, status, progress) => {
+                setFiles(prev => prev.map(f => f.id === id ? { ...f, status: status as any, progress } : f));
+            },
+            (finalZip, rep) => {
+                setZipFile(finalZip);
+                setReport(rep);
+                setIsProcessing(false);
             }
         );
-        setTimeout(() => processor.start(), 100);
-    }, [state.files, state.config]);
+        engine.start();
+    }, [files, config]);
 
-    const completedCount = state.files.filter(f => f.status === 'completed').length;
-    const progressTotal = state.files.length === 0 ? 0 : Math.round((completedCount / state.files.length) * 100);
+    // Download Handler
+    const downloadZip = () => {
+        if (!zipFile) return;
+        const url = URL.createObjectURL(zipFile);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = zipFile.name; // Uses the name we set in BatchProcessor
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const completed = files.filter(f => f.status === 'completed').length;
+    const progressPerc = files.length ? Math.round((completed / files.length) * 100) : 0;
 
     return (
-        <div className="flex flex-col h-screen bg-[var(--bg-body)]">
+        <div className="flex flex-col h-screen bg-[#f8fafc] text-slate-800 font-sans overflow-hidden">
             <Header />
             
-            {/* Split Screen Layout: Fixed Height Container */}
-            <main className="flex-1 flex overflow-hidden p-4 gap-4 max-w-[1920px] mx-auto w-full">
+            <main className="flex-1 flex overflow-hidden max-w-[1800px] w-full mx-auto p-4 gap-4">
                 
-                {/* LEFT SIDEBAR: Controls (Fixed, Scrollable if needed but mostly fits) */}
-                <aside className="w-[340px] flex-shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar pb-4">
-                    {/* Upload */}
-                    <div className="bg-white rounded-xl shadow-sm border border-[var(--border-color)] overflow-hidden">
-                        <FileUpload
-                            id="u-audio" title="Import Audio" description="Drag & drop folder/files here"
-                            onFileUpload={handleAudioUpload} directory={false} multiple fileCount={state.files.length}
-                        />
-                    </div>
+                {/* --- LEFT PANEL: CONTROLS --- */}
+                <aside className="w-[360px] flex-shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+                    {/* 1. Upload */}
+                    <FileUpload id="files" title="Input Source" description="Drag audio files here" onFileUpload={handleUpload} multiple fileCount={files.length} />
 
-                    {/* Stats */}
-                    {state.files.length > 0 && (
-                        <div className="bg-[var(--bg-panel)] rounded-xl p-5 shadow-sm border border-[var(--border-color)]">
-                            <div className="text-center">
-                                <span className="text-4xl font-extrabold text-[var(--text-primary)]">{completedCount}</span>
-                                <span className="text-sm text-[var(--text-secondary)] font-medium"> / {state.files.length}</span>
-                            </div>
-                            <div className="w-full bg-slate-100 rounded-full h-2 mt-3 overflow-hidden">
-                                <div className="bg-[var(--accent-color)] h-full transition-all duration-300" style={{ width: `${progressTotal}%` }}></div>
-                            </div>
-                            <button
-                                onClick={handleProcess}
-                                disabled={isProcessing || !state.files.length}
-                                className={`mt-4 w-full py-3 rounded-lg font-bold text-white transition-all transform active:scale-95 flex items-center justify-center gap-2
-                                    ${isProcessing ? 'bg-slate-300 cursor-wait' : 'bg-[var(--accent-color)] hover:bg-[var(--accent-hover)] shadow-lg shadow-blue-500/20'}`}
-                            >
-                                {isProcessing ? <><LoaderIcon className="animate-spin w-5 h-5"/>Processing</> : <><SettingsIcon className="w-5 h-5"/>Start Render</>}
-                            </button>
+                    {/* 2. Config */}
+                    <ConfigurationPanel config={config} setConfig={setConfig} />
+
+                    {/* 3. Export Section (Always Visible) */}
+                    <div className="bg-white rounded-xl shadow-lg border border-blue-100 p-5 sticky bottom-0">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Output Filename</label>
+                        <div className="flex items-center gap-2 mb-4">
+                            <input 
+                                type="text" 
+                                value={config.zipFileName}
+                                onChange={e => setConfig(p => ({...p, zipFileName: e.target.value}))}
+                                placeholder="Output Name"
+                                className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-[var(--accent-color)] outline-none"
+                            />
+                            <span className="text-slate-400 text-sm font-bold">.zip</span>
                         </div>
-                    )}
-
-                    {/* Configuration */}
-                    <ConfigurationPanel config={state.config} setConfig={(c) => dispatch({ type: 'SET_CONFIG', payload: typeof c === 'function' ? c(state.config) : c })} />
-                    
-                    {/* Results (Shows up at bottom of sidebar when done) */}
-                    {(zipBlob || report) && <ResultsDisplay zipBlob={zipBlob} report={report} />}
+                        
+                        {!zipFile ? (
+                            <button 
+                                onClick={runBatch} 
+                                disabled={isProcessing || files.length === 0}
+                                className={`w-full py-3.5 rounded-lg font-bold text-white shadow-md flex items-center justify-center gap-2 transition-all
+                                    ${isProcessing ? 'bg-slate-400 cursor-not-allowed' : 'bg-[var(--accent-color)] hover:bg-blue-700 active:scale-95'}`}
+                            >
+                                {isProcessing ? <LoaderIcon className="animate-spin" /> : <SettingsIcon />}
+                                {isProcessing ? 'RENDERING WR...' : 'START BATCH'}
+                            </button>
+                        ) : (
+                            <button 
+                                onClick={downloadZip}
+                                className="w-full py-3.5 rounded-lg font-bold text-white bg-emerald-500 hover:bg-emerald-600 shadow-md flex items-center justify-center gap-2 animate-bounce-short"
+                            >
+                                <DownloadIcon /> DOWNLOAD ZIP
+                            </button>
+                        )}
+                        
+                        {/* Mini Stats */}
+                        {files.length > 0 && (
+                            <div className="mt-4 flex justify-between text-xs font-medium text-slate-500">
+                                <span>Progress: {progressPerc}%</span>
+                                <span>{completed}/{files.length} Done</span>
+                            </div>
+                        )}
+                    </div>
                 </aside>
 
-                {/* RIGHT PANEL: Queue (Main Content - Takes remaining space) */}
-                <section className="flex-1 bg-[var(--bg-panel)] rounded-xl shadow-sm border border-[var(--border-color)] flex flex-col overflow-hidden">
-                    <div className="px-6 py-4 border-b border-[var(--border-color)] bg-slate-50 flex justify-between items-center">
-                        <h2 className="font-bold text-[var(--text-primary)] flex items-center gap-2">
-                             Processing Queue
-                             {state.files.length > 0 && <span className="text-xs bg-slate-200 px-2 py-0.5 rounded-full text-[var(--text-secondary)]">{state.files.length}</span>}
+                {/* --- RIGHT PANEL: MATRIX GRID --- */}
+                <section className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+                    <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                        <h2 className="font-bold text-slate-700 flex items-center gap-2">
+                            Studio Queue 
+                            <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs">{files.length}</span>
                         </h2>
-                        <div className="text-xs font-mono text-[var(--text-tertiary)]">
-                            {state.files.length === 0 ? 'Idle' : isProcessing ? 'Running...' : 'Ready'}
-                        </div>
+                        {report && <span className="text-xs text-emerald-600 font-bold">Done in {(report.timeElapsed/1000).toFixed(1)}s</span>}
                     </div>
 
-                    {/* Scrollable List */}
-                    <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-2">
-                        {state.files.length === 0 ? (
-                            <div className="h-full flex flex-col items-center justify-center text-slate-300">
-                                <svg className="w-16 h-16 mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
-                                <p className="text-lg font-medium">Queue is empty</p>
-                                <p className="text-sm">Import files from the left panel to begin.</p>
+                    <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                        {files.length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center opacity-30">
+                                <SettingsIcon className="w-24 h-24 text-slate-400 mb-4" />
+                                <p className="text-xl font-bold text-slate-400">WAITING FOR INPUT</p>
                             </div>
                         ) : (
-                            state.files.map((file) => (
-                                <div key={file.id} className="group flex items-center gap-4 bg-white p-3 rounded-lg border border-slate-100 hover:border-blue-200 hover:shadow-sm transition-all relative overflow-hidden">
-                                     {/* Progress Background */}
-                                     {file.status !== 'error' && (
-                                        <div className="absolute left-0 bottom-0 h-1 bg-[var(--accent-color)] transition-all duration-300 opacity-20" style={{ width: `${file.progress}%` }}></div>
-                                     )}
-                                     
-                                     {/* Status Icon */}
-                                     <div className="w-8 flex-shrink-0 flex justify-center">
-                                         {file.status === 'idle' && <div className="w-2 h-2 rounded-full bg-slate-300" />}
-                                         {file.status === 'processing' && <LoaderIcon className="w-5 h-5 text-[var(--accent-color)] animate-spin" />}
-                                         {file.status === 'encoding' && <span className="text-[10px] font-bold text-amber-500 border border-amber-200 px-1 rounded">MP3</span>}
-                                         {file.status === 'completed' && <CheckCircleIcon className="w-5 h-5 text-[var(--success-color)]" />}
-                                         {file.status === 'error' && <WarningIcon className="w-5 h-5 text-[var(--error-color)]" />}
-                                     </div>
-
-                                     {/* Info */}
-                                     <div className="flex-1 min-w-0">
-                                         <p className="text-sm font-medium text-[var(--text-primary)] truncate" title={file.name}>{file.name}</p>
-                                         <div className="flex justify-between items-center">
-                                            <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
-                                                {file.status === 'processing' ? `Analysing & Pitch Shifting... ${file.progress}%` : 
-                                                 file.status === 'encoding' ? 'LameJS Encoding...' :
-                                                 file.status}
-                                            </p>
-                                         </div>
-                                     </div>
-                                </div>
-                            ))
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                                {files.map(file => (
+                                    <div key={file.id} className="relative bg-white border border-slate-100 rounded-lg p-3 hover:shadow-md transition-shadow overflow-hidden">
+                                        {/* Progress Bar Background */}
+                                        <div className="absolute bottom-0 left-0 h-1 bg-blue-500 transition-all duration-300" style={{width: `${file.progress}%`}}></div>
+                                        
+                                        <div className="flex items-start justify-between mb-2">
+                                            <div className="p-1.5 rounded bg-slate-50 border border-slate-100">
+                                                {file.status === 'completed' ? <CheckCircleIcon className="w-5 h-5 text-emerald-500"/> :
+                                                 file.status === 'error' ? <WarningIcon className="w-5 h-5 text-red-500"/> :
+                                                 file.status === 'idle' ? <div className="w-5 h-5 rounded-full border-2 border-slate-300"/> :
+                                                 <LoaderIcon className="w-5 h-5 text-blue-500 animate-spin"/>}
+                                            </div>
+                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                                file.status === 'completed' ? 'bg-emerald-50 text-emerald-600' : 
+                                                file.status === 'rendering' ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'
+                                            }`}>
+                                                {file.status}
+                                            </span>
+                                        </div>
+                                        
+                                        <p className="font-semibold text-sm text-slate-700 truncate mb-1" title={file.name}>{file.name}</p>
+                                        <p className="text-xs text-slate-400 font-mono">
+                                            {(file.originalSize / 1024 / 1024).toFixed(2)} MB
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 </section>
