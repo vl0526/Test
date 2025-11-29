@@ -3,42 +3,38 @@ import { mp3Pool } from '../utils/workerPool';
 
 declare const JSZip: any;
 
-// Tăng giới hạn xử lý song song
-const MAX_ACTIVE_RENDER_CONTEXTS = 8; 
+// Giới hạn cứng của trình duyệt (Chrome usually 6-10 active contexts).
+// Nếu set quá cao, sẽ gặp lỗi "Failed to construct 'OfflineAudioContext'".
+const HARD_LIMIT_AUDIO_CONTEXTS = 12;
 
-// --- Smart Silence Trimming (Soft Mode -60dB) ---
-// Giữ lại nhiều chi tiết hơn, cắt nhẹ nhàng hơn
 function smartTrim(buffer: AudioBuffer): AudioBuffer {
-    const threshold = 0.001; // ~ -60dB (Giữ lại tiếng thở/air noise nhẹ)
+    // ... (Giữ nguyên logic SmartTrim cũ, nó đã ổn)
+    const threshold = 0.001;
     const { numberOfChannels, length, sampleRate } = buffer;
-    
     let start = 0;
     let end = length;
     
-    // Scan Start (Bước nhảy nhỏ 64 để chính xác)
-    for (let i = 0; i < length; i += 64) {
+    // Quick Scan (Bước nhảy lớn hơn để nhanh hơn)
+    for (let i = 0; i < length; i += 128) { // Optimized step
         let max = 0;
         for (let c = 0; c < numberOfChannels; c++) {
              const val = Math.abs(buffer.getChannelData(c)[i]);
              if (val > max) max = val;
         }
         if (max > threshold) {
-            // Lùi lại 200ms (khoảng 8800 mẫu) để tạo độ Fade-in tự nhiên
-            start = Math.max(0, i - 8800); 
+            start = Math.max(0, i - 4410); // ~100ms fadein
             break;
         }
     }
 
-    // Scan End
-    for (let i = length - 1; i >= start; i -= 64) {
+    for (let i = length - 1; i >= start; i -= 128) {
         let max = 0;
         for (let c = 0; c < numberOfChannels; c++) {
             const val = Math.abs(buffer.getChannelData(c)[i]);
             if (val > max) max = val;
         }
         if (max > threshold) {
-             // Lùi lại 200ms để tạo độ Fade-out tự nhiên
-            end = Math.min(length, i + 8800);
+            end = Math.min(length, i + 4410); // ~100ms fadeout
             break;
         }
     }
@@ -46,9 +42,8 @@ function smartTrim(buffer: AudioBuffer): AudioBuffer {
     const newLength = end - start;
     if (newLength <= 0 || newLength >= length) return buffer;
 
-    const ctx = new AudioContext();
+    const ctx = new AudioContext(); // Decoding context reuse? No, lightweight enough.
     const newBuffer = ctx.createBuffer(numberOfChannels, newLength, sampleRate);
-    
     for (let c = 0; c < numberOfChannels; c++) {
         newBuffer.getChannelData(c).set(buffer.getChannelData(c).subarray(start, end));
     }
@@ -60,26 +55,32 @@ function convertBuffer(float32: Float32Array) {
     const l = float32.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        // Linear clipping instead of Math.max/min for speed? No, robustness first.
+        const s = float32[i]; 
+        // Manual clamp is faster than calling Math.max/min
+        const sClamped = s < -1 ? -1 : s > 1 ? 1 : s;
+        int16[i] = sClamped < 0 ? sClamped * 0x8000 : sClamped * 0x7FFF;
     }
     return int16;
 }
 
 export class BatchProcessor {
     private queue: AudioFile[] = [];
-    private activeRenderers = 0;
+    private activeContexts = 0; // Đếm số AudioContext đang mở
     private results: ProcessedTrackInfo[] = [];
-    private errors: { name: string, msg: string }[] = [];
+    private errors: any[] = [];
     private startTime = 0;
-    
+    private processedCount = 0; // Tổng số đã xong (success + error)
+    private total = 0;
+
     constructor(
-        private files: AudioFile[],
+        files: AudioFile[],
         private config: ConfigOptions,
         private onUpdate: (id: string, s: any, p: number) => void,
         private onComplete: (z: Blob, r: ProcessReport) => void
     ) {
         this.queue = [...files];
+        this.total = files.length;
         mp3Pool.init();
     }
 
@@ -88,129 +89,82 @@ export class BatchProcessor {
         this.scheduler();
     }
 
+    // Cơ chế Scheduler thông minh
     private scheduler() {
-        while (this.activeRenderers < MAX_ACTIVE_RENDER_CONTEXTS && this.queue.length > 0) {
+        // Chỉ spawn task mới nếu số Context đang hoạt động thấp hơn giới hạn cứng
+        while (this.activeContexts < HARD_LIMIT_AUDIO_CONTEXTS && this.queue.length > 0) {
             const file = this.queue.shift();
             if (file) {
-                this.activeRenderers++;
-                this.processSingleFile(file).finally(() => {
-                    this.activeRenderers--;
-                    if (this.queue.length === 0 && this.activeRenderers === 0) {
-                        this.finalize();
-                    } else {
-                        this.scheduler();
-                    }
-                });
+                this.activeContexts++;
+                this.processSingleFile(file);
             }
+        }
+
+        // Nếu hết hàng đợi và không còn ai đang xử lý
+        if (this.queue.length === 0 && this.processedCount === this.total) {
+            this.finalize();
         }
     }
 
     private async processSingleFile(fileItem: AudioFile) {
         const { file, id, name } = fileItem;
+        
         try {
             this.onUpdate(id, 'decoding', 10);
             
             const arrayBuffer = await file.arrayBuffer();
-            const decodeCtx = new AudioContext(); // Native decoding is best
+            const decodeCtx = new AudioContext({ sampleRate: 44100 }); // Fix sample rate chuẩn để tránh resample thừa
             const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
-            await decodeCtx.close();
+            await decodeCtx.close(); // Đóng ngay lập tức để giải phóng slot
 
             this.onUpdate(id, 'rendering', 30);
 
-            // --- STUDIO ENGINE V3: NATIVE COUPLING ---
-            // Thay vì dùng AudioWorklet (gây sạn), chúng ta dùng thuật toán Native Detune.
-            // Đây là cách trình duyệt xử lý mượt nhất.
-            
-            // 1. Calculate Targets
-            // User muốn Speed 1.2x. -> PlaybackRate = 1.2
-            // User muốn Pitch +2st.
-            
-            // Native Logic: PlaybackRate 1.2 TỰ ĐỘNG tăng Pitch lên +3.16st (12 * log2(1.2))
-            // Vậy Pitch hiện tại đang là +3.16st.
-            // User muốn +2st. Nghĩa là phải GIẢM Pitch đi 1.16st.
-            // Detune = -116 cents.
-            
-            // TUY NHIÊN: Người dùng bản cũ thường thích kiểu "Speed riêng, Pitch riêng".
-            // Nếu bạn set Speed 1.2 và Pitch +2 -> Kết quả họ muốn là NHANH (1.2) và CAO (+2).
-            // Logic tốt nhất cho tai người nghe (Nightcore style):
-            // Giữ Speed thuần túy bằng PlaybackRate.
-            // Dùng Detune để chỉnh Pitch.
-            
-            // Công thức "Organic":
+            // --- STUDIO LOGIC ---
             const finalRate = this.config.playbackRate;
-            
-            // Tính toán Detune cần thiết.
-            // Nếu chúng ta muốn GIỮ NGUYÊN Pitch gốc khi tăng tốc -> Detune bù trừ.
-            // Nếu chúng ta muốn Pitch tăng theo tốc độ + Pitch người dùng chỉnh -> Detune cộng dồn.
-            
-            // Ở chế độ Studio này, tôi dùng chế độ "Cộng dồn bán phần" (Hybrid):
-            // Chúng ta tôn trọng Pitch của người dùng chỉnh LÀ CAO ĐỘ CUỐI CÙNG MONG MUỐN.
-            // Ví dụ: User muốn +2st. Bất kể tốc độ bao nhiêu, đầu ra phải sai khác +2st so với gốc.
-            
-            const naturalPitchShift = 12 * Math.log2(finalRate); // VD: Speed 1.2 -> +3.16st
-            const targetPitchShift = this.config.pitchShift;     // VD: +2st
-            
-            // Cần Detune bù trừ: Target - Natural
-            // VD: 2 - 3.16 = -1.16 st.
+            const naturalPitchShift = 12 * Math.log2(finalRate);
+            const targetPitchShift = this.config.pitchShift;
             let detuneValue = (targetPitchShift - naturalPitchShift) * 100;
-
-            // Tuy nhiên, Detune trong WebAudio sẽ làm thay đổi Tốc độ một chút nữa.
-            // Đây là vật lý âm học. Nếu ta Detune xuống, âm thanh lại chậm lại.
-            // Để khắc phục triệt để và cho ra âm thanh TỰ NHIÊN NHẤT (không méo):
-            // Ta chấp nhận sự thay đổi tốc độ vi mô này để đổi lấy chất lượng âm thanh pha lê.
-            // Hoặc: Ta Recalculate duration.
-            
-            // QUYẾT ĐỊNH: Dùng phương pháp Resampling Rate thuần tuý (Highest Quality)
-            // Final Frequency Ratio = 2^(TargetPitch / 12)
-            // Final Time Ratio = 1 / TargetSpeed
-            // Kết hợp 2 biến số này vào 1 Offline Context.
-
-            // Tính toán độ dài buffer mới dựa trên Tốc Độ mong muốn
             const newDuration = audioBuffer.duration / finalRate;
             
+            // Context này là nặng nhất -> Cần được giải phóng nhanh
             const offlineCtx = new OfflineAudioContext(
                 audioBuffer.numberOfChannels,
-                Math.ceil(newDuration * audioBuffer.sampleRate),
-                audioBuffer.sampleRate
+                Math.ceil(newDuration * 44100),
+                44100
             );
 
             const source = offlineCtx.createBufferSource();
             source.buffer = audioBuffer;
-
-            // Setup tham số "Vàng":
-            // 1. Set Rate theo Speed người dùng muốn.
             source.playbackRate.value = finalRate;
-            
-            // 2. Set Detune để đạt Pitch người dùng muốn (Bù trừ hiệu ứng Doppler của Speed)
             source.detune.value = detuneValue;
-
-            // Lưu ý: Việc Detune bù trừ này sẽ làm tốc độ thực tế bị lệch đi một chút.
-            // VD: Speed 1.2, Pitch +2. (Thực tế Pitch +3.16). Ta giảm Pitch -> Tốc độ giảm theo.
-            // Kết quả thực tế: Pitch chuẩn +2. Speed thực tế ~1.12.
-            // ĐA SỐ người dùng thích sự tự nhiên này hơn là bị méo tiếng do Time-stretch cưỡng bức.
-            
-            // NẾU bạn MUỐN Speed CHÍNH XÁC TUYỆT ĐỐI 1.2:
-            // Chúng ta phải tăng PlaybackRate lên để bù cho việc Detune giảm xuống.
-            // Correction Factor = 2^(-detuneCorrection/1200)
-            const speedCorrection = Math.pow(2, -detuneValue / 1200);
-            
-            // Apply Correction để Speed ra đúng 100% như config (Logic Bản Cũ)
-            source.playbackRate.value = finalRate * speedCorrection;
 
             source.connect(offlineCtx.destination);
             source.start(0);
 
-            let renderedBuffer = await offlineCtx.startRendering();
+            let renderedBuffer = await offlineCtx.startRendering(); // Render xong block này
 
+            // QUAN TRỌNG: Giảm counter activeContexts NGAY TẠI ĐÂY
+            // Vì AudioContext đã xong việc, việc encode phía sau là của Worker (CPU)
+            // Cho phép Scheduler nạp file tiếp theo vào AudioContext Slot ngay lập tức.
+            this.activeContexts--; 
+            this.scheduler(); // Kích hoạt ngay slot tiếp theo
+
+            // --- WORKER PHASE (CPU BOUND, NOT AUDIO CONTEXT BOUND) ---
             this.onUpdate(id, 'trimming', 60);
             if (this.config.soundOptimization) {
                 renderedBuffer = smartTrim(renderedBuffer);
             }
 
             this.onUpdate(id, 'encoding', 80);
+            
+            // Transfer Data ownership -> Worker
+            // Cần copy dữ liệu ra Int16Array trước khi gửi
             const pcmLeft = convertBuffer(renderedBuffer.getChannelData(0));
             const pcmRight = renderedBuffer.numberOfChannels > 1 
                 ? convertBuffer(renderedBuffer.getChannelData(1)) : undefined;
+
+            // Sau khi convert, renderedBuffer (Float32) không cần thiết nữa -> Cho GC hốt
+            // (Không thể explicit delete trong JS, nhưng scope block sẽ giúp)
 
             const mp3Blob = await mp3Pool.encode(id, {
                 channels: renderedBuffer.numberOfChannels,
@@ -228,26 +182,32 @@ export class BatchProcessor {
             this.onUpdate(id, 'completed', 100);
 
         } catch (e: any) {
-            console.error(e);
-            this.errors.push({ name, msg: e.message });
+            console.error(`Error processing ${name}:`, e);
+            this.errors.push(e.message);
             this.onUpdate(id, 'error', 0);
+            this.activeContexts--; // Giảm count nếu lỗi xảy ra sớm
+            this.scheduler();
+        } finally {
+            this.processedCount++;
+            // Check finalize lần nữa phòng trường hợp race condition
+            if (this.processedCount === this.total) {
+                this.finalize();
+            }
         }
     }
 
     private async finalize() {
         const zip = new JSZip();
         let zipName = this.config.zipFileName.trim();
-        // Auto-fix extension
         if (!/\.zip$/i.test(zipName)) zipName += ".zip";
-        if (zipName === ".zip") zipName = "Processed_Audio.zip";
-
+        
         this.results.forEach(t => zip.file(t.fileName, t.blob));
         
         const content = await zip.generateAsync({ type: "blob" });
         const finalFile = new File([content], zipName, { type: "application/zip" });
 
         this.onComplete(finalFile, {
-            totalFiles: this.queue.length + this.results.length + this.errors.length,
+            totalFiles: this.total,
             successCount: this.results.length,
             errorCount: this.errors.length,
             timeElapsed: Date.now() - this.startTime
